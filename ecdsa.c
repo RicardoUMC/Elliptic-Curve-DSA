@@ -1,11 +1,13 @@
 #include "../ecop/EC.h"
 #include <stdio.h>
+#include <stdbool.h>
 #include <gmp.h>
 #include <openssl/rand.h>
 
 void configure_public_params(mpz_t p, mpz_t a, mpz_t b, mpz_t q, ec_point *G);
 void generate_key_pair(mpz_t p, mpz_t a, mpz_t b, mpz_t q, ec_point G, char *filename);
 void ecdsa_signature(mpz_t r, mpz_t s, mpz_t d, mpz_t m, mpz_t p, mpz_t a, mpz_t b, mpz_t q, ec_point G);
+bool ecdsa_verification(mpz_t r, mpz_t s, mpz_t m, char *filename);
 
 int main(void) {
     mpz_t p, a, b, q, d, m, r, s;
@@ -33,6 +35,13 @@ int main(void) {
     ecdsa_signature(r, s, d, m, p, a, b, q, G);
 
     gmp_printf("Signature: (r, s) = (%Zd, %Zd)\n", r, s);
+
+    bool is_valid = ecdsa_verification(r, s, m, filename);
+    if (is_valid) {
+        printf("The signature is valid.\n");
+    } else {
+        printf("The signature is not valid.\n");
+    }
 
     mpz_clears(p, a, b, q, d, m, r, s, G.x, G.y, NULL);
 
@@ -85,11 +94,11 @@ void generate_key_pair(mpz_t p, mpz_t a, mpz_t b, mpz_t q, ec_point G, char *fil
         return;
     }
 
-    if (gmp_fprintf(file, "p = %Zd\n", p) < 0 ||
-        gmp_fprintf(file, "a = %Zd\n", a) < 0 ||
-        gmp_fprintf(file, "b = %Zd\n", b) < 0 ||
-        gmp_fprintf(file, "q = %Zd\n", q) < 0 ||
-        gmp_fprintf(file, "G = (%Zd:%Zd:%d)\n", G.x, G.y, G.z) < 0 ||
+    if (gmp_fprintf(file, "p = %Zd, ", p) < 0 ||
+        gmp_fprintf(file, "a = %Zd, ", a) < 0 ||
+        gmp_fprintf(file, "b = %Zd, ", b) < 0 ||
+        gmp_fprintf(file, "q = %Zd, ", q) < 0 ||
+        gmp_fprintf(file, "G = (%Zd:%Zd:%d), ", G.x, G.y, G.z) < 0 ||
         gmp_fprintf(file, "B = (%Zd:%Zd:%d)\n", B.x, B.y, B.z) < 0) {
         perror("Error writing to file\n");
     }
@@ -138,4 +147,50 @@ void ecdsa_signature(mpz_t r, mpz_t s, mpz_t d, mpz_t m, mpz_t p, mpz_t a, mpz_t
     mpz_mod(s, s, q);
 
     mpz_clears(k, k_inv, R.x, R.y, temp, NULL);
+}
+
+bool ecdsa_verification(mpz_t r, mpz_t s, mpz_t m, char *filename) {
+    mpz_t w, aux_1, aux_2, p, a, b, q;
+    ec_point G, B, P, P_temp_1, P_temp_2;
+
+    mpz_inits(w, aux_1, aux_2, p, a, b, q, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
+
+    FILE *file = fopen(filename, "r");
+    if (file == NULL) {
+        perror("Error opening file\n");
+        mpz_clears(w, aux_1, aux_2, p, a, b, q, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
+        return false;
+    }
+
+    if (gmp_fscanf(file, "p = %Zd, a = %Zd, b = %Zd, q = %Zd, G = (%Zd:%Zd:%d), B = (%Zd:%Zd:%d)\n", p, a, b, q, G.x, G.y, G.z, B.x, B.y, B.z) != 10) {
+        perror("Error reading from public key file\n");
+        fclose(file);
+        mpz_clears(w, aux_1, aux_2, p, a, b, q, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
+        return false;
+    }
+
+    fclose(file);
+
+    if (mpz_invert(w, s, q) == 0) {
+        perror("S has no modular inverse\n");
+        mpz_clears(w, aux_1, aux_2, p, a, b, q, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
+        return false;
+    }
+
+    mpz_mul(aux_1, w, m);
+    mpz_mod(aux_1, aux_1, q);
+
+    mpz_mul(aux_2, w, r);
+    mpz_mod(aux_2, aux_2, q);
+   
+
+    P_temp_1 = point_multiplication(a, b, p, G, aux_1)
+    P_temp_2 = point_multiplication(a, b, p, B, aux_2)
+    P = point_addition(a, b, p, P_temp_1, P_temp_2);
+
+    bool is_valid = (mpz_cmp(P.x, r) == 0);
+
+    mpz_clears(w, aux_1, aux_2, p, a, b, q, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
+    
+    return is_valid;
 }

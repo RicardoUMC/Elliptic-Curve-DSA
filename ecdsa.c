@@ -4,16 +4,16 @@
 
 void configure_public_params(mpz_t p, mpz_t a, mpz_t b, mpz_t q, ec_point *G);
 void generate_key_pair(mpz_t p, mpz_t a, mpz_t b, mpz_t q, ec_point *G, char *filename);
-void ecdsa_signature(mpz_t *r, mpz_t *s, mpz_t d, mpz_t m, mpz_t p, mpz_t a, mpz_t b, mpz_t q, ec_point *G);
-bool ecdsa_verification(mpz_t *r, mpz_t *s, mpz_t m, char *filename);
+void ecdsa_signature(mpz_t d, mpz_t m, mpz_t p, mpz_t a, mpz_t b, mpz_t q, ec_point *G, char *filename);
+bool ecdsa_verification(mpz_t m, char *pubkey_file, char *signature_file);
 
 int main(void) {
-    mpz_t p, a, b, q, d, m, r, s;
+    mpz_t p, a, b, q, d, m;
     ec_point G;
     int option;
     bool keys_generated = false, signature_generated = false;
 
-    mpz_inits(p, a, b, q, d, m, r, s, G.x, G.y, NULL);
+    mpz_inits(p, a, b, q, d, m, G.x, G.y, NULL);
 
     while (1) {
         printf("\nMenu:\n");
@@ -46,8 +46,7 @@ int main(void) {
                     break;
                 }
 
-                ecdsa_signature(&r, &s, d, m, p, a, b, q, &G);
-                gmp_printf("Signature: (r, s) = (%Zd, %Zd)\n", r, s);
+                ecdsa_signature(d, m, p, a, b, q, &G, "ecdsa_rs.txt");
                 signature_generated = true;
                 break;
             case 3:
@@ -64,14 +63,14 @@ int main(void) {
                     break;
                 }
 
-                ecdsa_verification(&r, &s, m, "ecdsa_keypair.txt") ?
+                ecdsa_verification(m, "ecdsa_keypair.txt", "ecdsa_rs.txt") ?
                     printf("The signature is valid.\n") :
                     printf("The signature is not valid.\n");
 
                 break;
             case 4:
                 printf("Exiting program.\n");
-                mpz_clears(p, a, b, q, d, m, r, s, G.x, G.y, NULL);
+                mpz_clears(p, a, b, q, d, m, G.x, G.y, NULL);
                 return 0;
             default:
                 printf("Invalid option. Please select again.\n");
@@ -109,7 +108,7 @@ void generate_key_pair(mpz_t p, mpz_t a, mpz_t b, mpz_t q, ec_point *G, char *fi
 
     unsigned char buffer[32];
     if (RAND_bytes(buffer, sizeof(buffer)) != 1) {
-        perror("Error generating secure random bytes\n");
+        perror("Error generating secure random bytes");
         mpz_clears(d, B.x, B.y, NULL);
         return;
     }
@@ -121,18 +120,19 @@ void generate_key_pair(mpz_t p, mpz_t a, mpz_t b, mpz_t q, ec_point *G, char *fi
 
     FILE *file = fopen(filename, "w");
     if (file == NULL) {
-        perror("Error opening file\n");
+        perror("Error opening file");
         mpz_clears(d, B.x, B.y, NULL);
         return;
     }
 
-    if (gmp_fprintf(file, "p = %Zd, ", p) < 0 ||
-            gmp_fprintf(file, "a = %Zd, ", a) < 0 ||
-            gmp_fprintf(file, "b = %Zd, ", b) < 0 ||
-            gmp_fprintf(file, "q = %Zd, ", q) < 0 ||
-            gmp_fprintf(file, "G = (%Zd:%Zd:%d), ", G->x, G->y, G->z) < 0 ||
-            gmp_fprintf(file, "B = (%Zd:%Zd:%d)\n", B.x, B.y, B.z) < 0) {
-        perror("Error writing to file\n");
+    if (gmp_fprintf(file, "Public key: (") < 0 ||
+            gmp_fprintf(file, "%Zd, ", p) < 0 ||
+            gmp_fprintf(file, "%Zd, ", a) < 0 ||
+            gmp_fprintf(file, "%Zd, ", b) < 0 ||
+            gmp_fprintf(file, "%Zd, ", q) < 0 ||
+            gmp_fprintf(file, "(%Zd:%Zd:%d), ", G->x, G->y, G->z) < 0 ||
+            gmp_fprintf(file, "(%Zd:%Zd:%d))\n", B.x, B.y, B.z) < 0) {
+        perror("Error writing to file");
     }
 
     fclose(file);
@@ -143,17 +143,17 @@ void generate_key_pair(mpz_t p, mpz_t a, mpz_t b, mpz_t q, ec_point *G, char *fi
     mpz_clears(d, B.x, B.y, NULL);
 }
 
-void ecdsa_signature(mpz_t *r, mpz_t *s, mpz_t d, mpz_t m, mpz_t p, mpz_t a, mpz_t b, mpz_t q, ec_point *G) {
-    mpz_t k, k_inv, temp;
+void ecdsa_signature(mpz_t d, mpz_t m, mpz_t p, mpz_t a, mpz_t b, mpz_t q, ec_point *G, char *filename) {
+    mpz_t r, s, k, k_inv, temp;
     ec_point R;
 
-    mpz_inits(k, k_inv, R.x, R.y, temp, NULL);
+    mpz_inits(r, s, k, k_inv, R.x, R.y, temp, NULL);
 
     do {
         unsigned char buffer[32];
         if (RAND_bytes(buffer, sizeof(buffer)) != 1) {
-            perror("Error generating secure random bytes\n");
-            mpz_clears(k, k_inv, R.x, R.y, temp, NULL);
+            perror("Error generating secure random bytes");
+            mpz_clears(r, s, k, k_inv, R.x, R.y, temp, NULL);
             return;
         }
 
@@ -163,41 +163,57 @@ void ecdsa_signature(mpz_t *r, mpz_t *s, mpz_t d, mpz_t m, mpz_t p, mpz_t a, mpz
 
     R = point_multiplication(a, b, p, G, k);
 
-    mpz_set(*r, R.x);
+    mpz_set(r, R.x);
 
     if (mpz_invert(k_inv, k, q) == 0) {
-        perror("K has no modular inverse\n");
-        mpz_clears(k, k_inv, R.x, R.y, temp, NULL);
+        perror("K has no modular inverse");
+        mpz_clears(r, s, k, k_inv, R.x, R.y, temp, NULL);
         return;
     }
 
-    mpz_mul(temp, d, *r);
+    mpz_mul(temp, d, r);
     mpz_add(temp, temp, m);
     mpz_mod(temp, temp, q);
 
-    mpz_mul(*s, temp, k_inv);
-    mpz_mod(*s, *s, q);
+    mpz_mul(s, temp, k_inv);
+    mpz_mod(s, s, q);
 
-    mpz_clears(k, k_inv, R.x, R.y, temp, NULL);
+    FILE *file = fopen(filename, "w");
+    if (file == NULL) {
+        perror("Error opening file");
+        mpz_clears(r, s, k, k_inv, R.x, R.y, temp, NULL);
+        return;
+    }
+
+    if (gmp_fprintf(file, "(%Zd, ", r) < 0 ||
+            gmp_fprintf(file, "%Zd)\n", s) < 0) {
+        perror("Error writing to file");
+    }
+
+    fclose(file);
+
+    gmp_printf("Signature: (r, s) = (%Zd, %Zd)\n", r, s);
+
+    mpz_clears(r, s, k, k_inv, R.x, R.y, temp, NULL);
 }
 
-bool ecdsa_verification(mpz_t *r, mpz_t *s, mpz_t m, char *filename) {
-    mpz_t w, aux_1, aux_2, p, a, b, q;
+bool ecdsa_verification(mpz_t m, char *pubkey_file, char *signature_file) {
+    mpz_t w, aux_1, aux_2, p, a, b, q, r, s;
     ec_point G, B, P, P_temp_1, P_temp_2;
 
-    mpz_inits(w, aux_1, aux_2, p, a, b, q, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
+    mpz_inits(w, aux_1, aux_2, p, a, b, q, r, s, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
 
-    FILE *file = fopen(filename, "r");
+    FILE *file = fopen(pubkey_file, "r");
     if (file == NULL) {
-        perror("Error opening file\n");
-        mpz_clears(w, aux_1, aux_2, p, a, b, q, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
+        perror("Error opening public key file");
+        mpz_clears(w, aux_1, aux_2, p, a, b, q, r, s, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
         return false;
     }
 
-    if (gmp_fscanf(file, "p = %Zd, a = %Zd, b = %Zd, q = %Zd, G = (%Zd:%Zd:1), B = (%Zd:%Zd:1)\n", p, a, b, q, G.x, G.y, B.x, B.y) != 8) {
-        perror("Error reading from public key file\n");
+    if (gmp_fscanf(file, "Public key: (%Zd, %Zd, %Zd, %Zd, (%Zd:%Zd:1), (%Zd:%Zd:1))\n", p, a, b, q, G.x, G.y, B.x, B.y) != 8) {
+        perror("Error reading from public key file");
         fclose(file);
-        mpz_clears(w, aux_1, aux_2, p, a, b, q, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
+        mpz_clears(w, aux_1, aux_2, p, a, b, q, r, s, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
         return false;
     }
 
@@ -206,16 +222,32 @@ bool ecdsa_verification(mpz_t *r, mpz_t *s, mpz_t m, char *filename) {
     G.z = 1;
     B.z = 1;
 
-    if (mpz_invert(w, *s, q) == 0) {
-        perror("S has no modular inverse\n");
-        mpz_clears(w, aux_1, aux_2, p, a, b, q, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
+    file = fopen(signature_file, "r");
+    if (file == NULL) {
+        perror("Error opening signature file");
+        mpz_clears(w, aux_1, aux_2, p, a, b, q, r, s, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
+        return false;
+    }
+
+    if (gmp_fscanf(file, "(%Zd, %Zd)\n", r, s) != 2) {
+        perror("Error reading from signature file");
+        fclose(file);
+        mpz_clears(w, aux_1, aux_2, p, a, b, q, r, s, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
+        return false;
+    }
+
+    fclose(file);
+
+    if (mpz_invert(w, s, q) == 0) {
+        perror("S has no modular inverse");
+        mpz_clears(w, aux_1, aux_2, p, a, b, q, r, s, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
         return false;
     }
 
     mpz_mul(aux_1, w, m);
     mpz_mod(aux_1, aux_1, q);
 
-    mpz_mul(aux_2, w, *r);
+    mpz_mul(aux_2, w, r);
     mpz_mod(aux_2, aux_2, q);
 
 
@@ -223,9 +255,9 @@ bool ecdsa_verification(mpz_t *r, mpz_t *s, mpz_t m, char *filename) {
     P_temp_2 = point_multiplication(a, b, p, &B, aux_2);
     P = point_addition(a, b, p, &P_temp_1, &P_temp_2);
 
-    bool is_valid = (mpz_cmp(P.x, *r) == 0);
+    bool is_valid = (mpz_cmp(P.x, r) == 0);
 
-    mpz_clears(w, aux_1, aux_2, p, a, b, q, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
+    mpz_clears(w, aux_1, aux_2, p, a, b, q, r, s, G.x, G.y, B.x, B.y, P.x, P.y, P_temp_1.x, P_temp_1.y, P_temp_2.x, P_temp_2.y, NULL);
 
     return is_valid;
 }
